@@ -17,29 +17,56 @@ our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 
 our @EXPORT = qw(
 );
-our $VERSION = '0.01';
+our $VERSION = '0.04';
 
 sub new {
   my $self=shift;
   my $class=ref($self) || $self;
-  return bless {}, $class;
+  my(%data,$tag);
+  while (@_) {$tag = shift; if ($tag =~ /^-/) {$tag =~ s/^-//;$data{lc($tag)} = shift;}}
+  $data{'dbase'} = "maxd" if (!$data{'dbase'});
+  if (!$data{'host'}) {
+    use Sys::Hostname;
+    my $hostname = hostname();
+    $data{'host'} = $data{'host'} || $ENV{'MAXD_HOSTDB'} || $hostname || "localhost";
+  }
+  if (!$data{'user'} || !$data{'pass'}) { 
+    ($data{'user'},$data{'pass'}) = split(/\//,$ENV{'MAXD_USERID'});
+  }
+  $data{'dbh'} = _dbconnect ($data{'host'},$data{'dbase'},$data{'user'},$data{'pass'}); 
+  # verify special tables
+  my($ok,$tname);
+  my $st = "show tables";
+  my $sh = $data{'dbh'}->prepare($st);
+  my $rv = $sh->execute;
+  while($tname= $sh->fetchrow_array) {
+    if ($tname =~ /^Image_Seq$/i) { $ok = 1; last; }
+  }
+  if (!$ok) {
+    print STDERR "WARNING: Run 'extendMaxD' to configure database\n";
+    $data{'dbh'} = undef;
+  }
+  $self = bless {} => $class;
+  foreach $tag (keys %data) { $self->{$tag} = $data{$tag}; }
+  return $self;
 }
 
 sub export { 
   my $self=shift;
   my(%data,$tag);
+  foreach $tag (keys %{$self}) { $data{$tag} = $self->{$tag};}
   while (@_) {$tag = shift; if ($tag =~ /^-/) {$tag =~ s/^-//;$data{lc($tag)} = shift;}}
   return 0 if (ref($data{'dbh'}) ne "DBI::db");
 
   # valid submitter ?
   ($data{'submitter_id'},$data{'submitter_name'}) =
-            _submitterfromSubmitterData($data{'dbh'},$data{'submitter'});
+            _submitterFromSubmitterData($data{'dbh'},$data{'submitter'});
   return (_error(501,$data{'submitter'})) if ($data{'submitter_id'}< 0);
   print "Submitter:\tname:$data{'submitter_name'}\tID:$data{'submitter_id'}\n"
         if ($data{'verbose'});
 
   # valid repository URL ?
-  $data{'repository_url'} = "." if (!-d $data{'repository_url'}); # TEMPORARY
+  $data{'repository_url'} = "." if (!-d $data{'repository_url'});
   $data{'repository_url'} .= "/" . $data{'submitter_name'};
   $data{'repository_url'} =~ s/ +/_/g;
   mkdir($data{'repository_url'},0755);
@@ -56,7 +83,7 @@ sub export {
 
   # valid array type ?
   return 0 if (not defined $data{'array_type'});
-  $data{'array_name'} = $data{'array_type'}; # TEMPORARY
+  $data{'array_name'} = $data{'array_type'} if (!$data{'array_name'});
   $data{'array_id'} = $data{'array_type'} if ($data{'array_type'} =~ /^\d+/);
   $data{'array_id'} = _arrayIDfromArrayType($data{'dbh'},$data{'array_type'})
                       if (!$data{'array_id'});
@@ -67,8 +94,11 @@ sub export {
   #valid export format ?
   $data{'format'} = lc($data{'format'});
   $data{'format'} = "genespring" if (!$data{'format'});
-  return (_error(501,"unknown format $data{'format'}"))
-    if ($data{'format'} !~ /genespring/);
+  return (_error(501,"unknown export format $data{'format'}"))
+    if ($data{'format'} !~ /\bgenespring\b/);
+  my $templateDir = $ENV{'MAXD_TEMPLATES'} || ".";
+  return (_error(501,"unable to find template for $data{'format'}"))
+    if (!-f "$templateDir/$data{'format'}\.tmpl");
   print "Export format:\t$data{'format'}\n" if ($data{'verbose'});
 
   print "collecting hybridisation\n" if ($data{'verbose'});
@@ -111,7 +141,7 @@ sub export {
   print "exporting master in htmlformat\n" if ($data{'verbose'});
   my $date = `date`;
   use HTML::Template;
-  my $template = HTML::Template->new(filename => 'GeneSpring.tmpl');
+  my $template = HTML::Template->new(filename => "$templateDir/GeneSpring.tmpl");
   $template->param(SUBMITTER_NAME => $data{'submitter_name'});
   $template->param(EXPERIMENT_NAME => $data{'experiment_name'});
   $template->param(ORGANIZ_NAME => $data{'organization_name'});
@@ -159,6 +189,7 @@ sub export {
 sub load_file {
   my $self=shift;
   my(%data,$tag);
+  foreach $tag (keys %{$self}) { $data{$tag} = $self->{$tag};}
   while (@_) {$tag = shift; if ($tag =~ /^-/) {$tag =~ s/^-//;$data{lc($tag)} = shift;}}
   return 0 if (ref($data{'dbh'}) ne "DBI::db");
   return 0 if (!-f $data{'matrix_file'});
@@ -199,8 +230,9 @@ sub load_file {
 
   # valid submitter ?
   ($data{'submitter_id'},$data{'submitter_name'}) = 
-            _submitterfromSubmitterData($data{'dbh'},$data{'submitter'});
-  return (_error(501,$data{'submitter'})) if ($data{'submitter_id'}< 0);
+            _submitterFromSubmitterData($data{'dbh'},$data{'submitter'});
+  return (_error(501,"submitter $data{'submitter'} unknown")) 
+          if ($data{'submitter_id'}< 0);
   print "Submitter:\tname:$data{'submitter_name'}\tID:$data{'submitter_id'}\n"
         if ($data{'verbose'});
 
@@ -244,23 +276,39 @@ sub load_file {
 
   $data{'dbh'}->begin_work;
 
-  # create Hybridisation entry
-  my $Hybridisation_ID = _getNextIDForTable($data{'dbh'},"Hybridisation");
-  $data{'dbh'}->do(qq{insert into Hybridisation 
-  (Name,ID,Description_ID,Experiment_ID,Hybridisation_Protocol_ID,Extract_ID,Array_ID) 
-  VALUES ("$data{'extract_name'}",$Hybridisation_ID,$data{'description_id'},
-  $data{'experiment_id'},$data{'hybridisation_protocol_id'},
-  $data{'extract_id'},$data{'array_id'})});
+  my $Hybridisation_ID = -1;
+  if ($data{'hybridisation'}) {
+    $Hybridisation_ID = _hybridisationIDfromHybridisationData(
+                        $data{'dbh'},$data{'hybridisation'});
+    return (_error(501,$data{'hybridisation'})) if ($Hybridisation_ID < 0);
+  }
+  if ($Hybridisation_ID < 0) {
+    # create Hybridisation entry
+    $Hybridisation_ID = _getNextIDForTable($data{'dbh'},"Hybridisation");
+    $data{'dbh'}->do(qq{insert into Hybridisation 
+    (Name,ID,Description_ID,Experiment_ID,Hybridisation_Protocol_ID,Extract_ID,Array_ID) 
+    VALUES ("$data{'extract_name'}",$Hybridisation_ID,$data{'description_id'},
+    $data{'experiment_id'},$data{'hybridisation_protocol_id'},
+    $data{'extract_id'},$data{'array_id'})});
+  }
   print "Hybridisation ID:\t$Hybridisation_ID\n" if ($data{'verbose'});
 
-  # create Image entry
-  my $Image_ID = _getNextIDForTable($data{'dbh'},"Image");
-  my $imageURL = "$data{'repository_url'}/$data{'submitter_name'}/$data{'extract_name'}\.dat";
-  $imageURL =~ s/ +/_/g;
-  $data{'dbh'}->do(qq{insert into Image
-  (Name,ID,Digitised_Image_URL,Hybridisation_ID,Scanning_Protocol_ID) VALUES
-  ("$data{'extract_name'}",$Image_ID,"$imageURL",
-  $Hybridisation_ID,$data{'scanning_protocol_id'})});
+  my $Image_ID = -1;
+  if ($data{'image'}) {
+    $Image_ID = _imageIDfromImageData ($data{'dbh'},$data{'image'});
+    return (_error(501,$data{'image'})) if ($Image_ID < 0);
+  }
+  if ($Image_ID < 0) {
+    # create Image entry
+    $Image_ID = _getNextIDForTable($data{'dbh'},"Image");
+    my $imageURL = 
+        "$data{'repository_url'}/$data{'submitter_name'}/$data{'extract_name'}\.dat";
+    $imageURL =~ s/ +/_/g;
+    $data{'dbh'}->do(qq{insert into Image
+    (Name,ID,Digitised_Image_URL,Hybridisation_ID,Scanning_Protocol_ID) VALUES
+    ("$data{'extract_name'}",$Image_ID,"$imageURL",
+    $Hybridisation_ID,$data{'scanning_protocol_id'})});
+  }
   print "Image ID:\t$Image_ID\n" if ($data{'verbose'});
 
   # create Measurement entry
@@ -285,57 +333,37 @@ sub load_file {
   VALUES (?,?,?,?,$Measurement_ID)";
   my $sh = $data{'dbh'}->prepare($st);
   my($rv,$level,$signif,$desc,$spotNam,$spotID);
-my($COUNT); # TEMPORARY
   foreach $spotNam (@spot_name) {
     $level = shift(@expression_level);
     $signif= shift(@significance);
     $desc = "NULL";
     $spotID = $spots{$spotNam};
-next if (!$spotID); # TEMPORARY
-#   return(_error(600,"unknown Spot name $spotNam\n")) if (!$spotID);
+    return(_error(600,"unknown Spot name $spotNam\n")) if (!$spotID);
     $rv = $sh->execute($level,$signif,$desc,$spotID);
-last if ($COUNT++ > 50);
   }
 
   $data{'dbh'}->commit;
   return 1;
 }
 
-sub dbconnect {
-  my $self=shift;
-  my(%data,$tag);
-  while (@_) {$tag = shift; if ($tag =~ /^-/) {$tag =~ s/^-//;$data{lc($tag)} = shift;}}
-  $data{'dbase'} = "maxd" if (!$data{'dbase'});
-  if (!$data{'host'}) {
-    use Sys::Hostname;
-    my $hostname = hostname();
-    $data{'host'} = $data{'host'} || $ENV{'MAXD_HOSTDB'} || $hostname || "localhost";
-  }
-  if (!$data{'user'} || !$data{'pass'}) {
-    ($data{'user'},$data{'pass'}) = split(/\//,$ENV{'MAXD_USERID'});
-  }
+sub version {
+  return $VERSION;
+}
 
-  my $MAXD = "DBI:mysql:$data{'dbase'}:$data{'host'}";
-  $data{'db'} = DBI->connect($MAXD,$data{'user'},$data{'pass'}) || $DBI::errstr;
-
-  my($ok,$tname);
-  my $st = "show tables";
-  my $sh = $data{'db'}->prepare($st);
-  my $rv = $sh->execute;
-  while($tname= $sh->fetchrow_array) {
-    if ($tname =~ /^Image_Seq$/i) {
-      $ok = 1;
-      last;
-    }
-  }
-  if (!$ok) {
-    print STDERR "WARNING: Run 'extendMaxD' to configure database\n";
-    $data{'db'} = undef;
-  }
-  return $data{'db'};
+sub disconnect {
+  my $self=shift;   
+  $self->{'dbh'}->disconnect;
+  delete $self->{'dbh'};
 }
 
 ### internal routines and methods
+
+sub _dbconnect {
+  my($host,$dbase,$user,$pass) = @_;
+  my $MAXD = "DBI:mysql:$dbase:$host";
+  my $db = DBI->connect($MAXD,$user,$pass) || $DBI::errstr;
+  return $db;
+}
 
 sub _measurementFromImageID {
   my($dbh,$id) = @_;
@@ -464,10 +492,36 @@ sub _extractfromExtractData {
   return ($id,$name);
 }
 
-sub _submitterfromSubmitterData {
+sub _submitterFromSubmitterData {
   my($dbh,$name) = @_;
   my($id);
   my $st = "select Name,ID from Submitter where ";
+  if ($name =~ /^\d+$/) {$st .= qq{ID = "$name"};} else {$st .= qq{ Name = "$name"};}
+  my $sh = $dbh->prepare($st);
+  my $rv = $sh->execute;
+  ($name,$id)= $sh->fetchrow_array;
+  $id = "-1" unless defined $id;
+  $name = "" unless defined $name;
+  return ($id,$name);
+}
+
+sub _hybridisationIDfromHybridisationData {
+  my($dbh,$name) = @_;
+  my($id);
+  my $st = "select Name,ID from Hybridisation where ";
+  if ($name =~ /^\d+$/) {$st .= qq{ID = "$name"};} else {$st .= qq{ Name = "$name"};}
+  my $sh = $dbh->prepare($st);
+  my $rv = $sh->execute;
+  ($name,$id)= $sh->fetchrow_array;
+  $id = "-1" unless defined $id;
+  $name = "" unless defined $name;
+  return ($id,$name);
+}
+
+sub _imageIDfromImageData {
+  my($dbh,$name) = @_;   
+  my($id);
+  my $st = "select Name,ID from Image where ";  
   if ($name =~ /^\d+$/) {$st .= qq{ID = "$name"};} else {$st .= qq{ Name = "$name"};}
   my $sh = $dbh->prepare($st);
   my $rv = $sh->execute;
@@ -603,15 +657,15 @@ Bio::Maxd - Perl extension for storing and retrieving data from maxd
 =head1 SYNOPSIS
 
   use Bio::Maxd;
-  my $maxd = new Bio::Maxd;  # create a new maxd object
-  $dbh = $maxd->dbconnect(-user=>'user', -pass=>'pass', 
-                          -host=>'host', -dbase=>'database');
-  $maxd->load_file(-dbh=>$dbh, -file=>'path_to_data_file',
+  my $maxd_db = new Bio::Maxd (-user=>'user', -pass=>'pass', 
+                               -host=>'host', -dbase=>'database');
+  $maxd_db->load_file(-file=>'path_to_data_file',
                   -experiment=>'experimentName', -array_type=>'geneChipName');
+  $maxd_db->disconnect();
 
 =head1 DESCRIPTION
 
-B<Bio::Maxd> provides several methods for uploading and retrieving
+B<Bio::Maxd> provides methods for uploading and retrieving
 data to/from a maxd (MySQL) database.
 
 "maxd" is a data warehouse and visualization environment for microarray
@@ -620,18 +674,13 @@ Manchester Bioinformatics (http://www.bioinf.man.ac.uk/microarray/)
 
 =head2 Bio::Maxd METHODS
 
-=over 4
+B<new()>, This is the constructor for B<Bio::Maxd>.
 
-=item B<new>
+ my $maxd_db = new Bio::Maxd();
 
-my $maxd = new Bio::Maxd;
-
-This is the constructor for B<Bio::Maxd>
-
-=item B<dbconnect>
-
-Establishes a database connection, or session, to the requested database.
-Returns a B<database handle> if the connection succeeds. Parameters:
+This is the constructor for B<Bio::Maxd>. 
+It establishes a database connection, or session, to the requested database.
+Parameters:
 
 =over 4
 
@@ -641,15 +690,13 @@ Returns a B<database handle> if the connection succeeds. Parameters:
 
 =item B<-dbase>, defaults to 'maxd'.
 
+=item B<-verbose>, defaults to false.
+
 =back
 
-=item B<load_file>
-
-Parses and loads a datafile into a maxd database.. 
+B<load_file()>, Parses and loads a datafile into a maxd database.. 
 
 =over 4
-
-=item B<-dbh>, database handle.
 
 =item B<-file>, datafile to parse.
 
@@ -662,19 +709,15 @@ Valid values are 'AFF' (Affimetrix matrics file)
 
 =back
 
-=item B<export>
-
-Exports data from maxd database..
+B<export()>, Exports data from maxd database..
 
 =over 4
-
-=item B<-dbh>, database handle.
 
 =item B<-verbose>, reports activity.
 
 =item B<-format>, desired format for the data to be exporte to. Valid values are 'GeneSpring'.
 
-=item B<-submitter>, submitter name of id.
+=item B<-submitter>, submitter name or id.
 
 =item B<-experiment>, experiment name or id.
 
@@ -682,11 +725,44 @@ Exports data from maxd database..
 
 =item B<-repository_URL>, where to install files.
 
+=item B<-image>, image name or id.
+
+=item B<-hybridisation>, hybridisation name or id.
+
 =back
+
+=head1 MISCELLANEOUS
+
+B<version()> Returns Bio::Maxd version
+
+B<$ENV{'MAXD_USERID'}>, contains userid/password
+
+B<$ENV{'MAXD_HOSTDB'}>, contains database host
+
+B<$ENV{'MAXD_TEMPLATES'}>, directory for export templates
+
+=head1 EXAMPLES
+
+  use Bio::Maxd;
+  my $maxd_db = new Bio::Maxd (-user=>'user', -pass=>'pass',
+                               -host=>'host', -dbase=>'database');
+  $maxd_db->load_file(-file=>'path_to_data_file',
+                  -experiment=>'experimentName', -array_type=>'geneChipName');
+  $maxd_db->disconnect();
+
+See the 'examples' directory in the distribution for scripts loadData and exportData
 
 =head1 EXPORT
 
 None by default.
+
+=head1 KNOWN BUGS
+
+None, but that does not mean there are not any.
+
+=head1 COPYRIGHT
+
+Copyright (C) 2002 Jaime Prilusky. All rights reserved.     
 
 =head1 AUTHOR
 

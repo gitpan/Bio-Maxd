@@ -2,10 +2,11 @@ Changes
 MANIFEST			This list of files
 Makefile.PL
 README
+lib/Bio/Maxd.pm
 examples/SA10Hu95metrics.txt
 examples/exportData
 examples/loadData
+examples/genespring.tmpl
 extendMaxD
-lib/Bio/GeneSpring.tmpl
-lib/Bio/Maxd.pm
 test.pl
+Bio-Maxd.ppd

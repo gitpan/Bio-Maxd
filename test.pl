@@ -10,7 +10,7 @@ BEGIN { $| = 1; print "1..2\n"; }
 END {print "not ok 1\n" unless $loaded;}
 use Bio::Maxd;
 $loaded = 1;
-print "ok 1\n";
+print "ok 1\tloaded\n";
 
 ######################### End of black magic.
 
@@ -18,6 +18,7 @@ use DBI;
 use DBD::mysql;
 
 # Test 2:
-my $maxd = new Bio::Maxd;
-my $dbh = $maxd->dbconnect();
-print (ref($dbh) eq "DBI::db" ? "ok 2\n" : "not ok 2\n");
+my $maxd_db = new Bio::Maxd(); # Gets defaults from MAXD_USERID and MAXD_HOSTDB
+my $dbh = $maxd_db->{'dbh'};
+print (ref($dbh) eq "DBI::db" ? "ok 2\tconnected\n" : "not ok 2\n");
+

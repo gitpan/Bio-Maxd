@@ -3,14 +3,17 @@ use lib ".";
 use DBI;
 use DBD::mysql;
 use Bio::Maxd;
+use Sys::Hostname;
 
-  print "Verifying MaxD at host $ENV{'MAXD_HOSTDB'}\n";
-  my $maxd = new Bio::Maxd;
-  my $dbh = $maxd->dbconnect();
+  my $dbase = "maxd";
+  my $hostname = hostname();
+  $host = $ENV{'MAXD_HOSTDB'} || $hostname || "localhost";
+  print "Verifying MaxD for database '$dbase' at host '$host'.\n";
+  my($user,$pass) = split(/\//,$ENV{'MAXD_USERID'});
 
-  my %tables = getAllTables($dbh);
-
-  verifySequenceTables($dbh,%tables);
+  my $maxd = new Bio::Maxd(-host=>$host,-dbase=>$dbase,-user=>$user,-pass=>$pass);;
+  my %tables = getAllTables($maxd->{'dbh'});
+  verifySequenceTables($maxd->{'dbh'},%tables);
 
 sub verifySequenceTables {
   my($dbh,%tables) = @_;

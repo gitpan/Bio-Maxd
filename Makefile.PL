@@ -1,6 +1,15 @@
 use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
+
+my @ppd;
+if ($] >= 5.00503) {
+  @ppd = (
+    AUTHOR    => 'Jaime Prilusky <Jaime.Prilusky@weizmann.ac.il>',
+    ABSTRACT  => 'methods for uploading and retrieving data to/from a maxd (MySQL) database'
+  );
+}
+
 WriteMakefile(
     'NAME'		=> 'Bio::Maxd',
     'VERSION_FROM'	=> 'lib/Bio/Maxd.pm',
@@ -11,5 +20,6 @@ WriteMakefile(
     },
     'linkext'   => { LINKTYPE=>'' },    # no link needed
     'dist'      => {'COMPRESS'=>'gzip -9f', 'SUFFIX' => 'gz',
-                    'ZIP'=>'/usr/bin/zip','ZIPFLAGS'=>'-rl'}
+                    'ZIP'=>'/usr/bin/zip','ZIPFLAGS'=>'-rl'},
+    @ppd
 );

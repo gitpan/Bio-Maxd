@@ -1,0 +1,6 @@
+Revision history for Perl extension Bio::Maxd.
+
+0.01  Wed Aug  7 11:07:22 2002
+	- original version; created by h2xs 1.1.1.4 with options
+		-c -X -n Bio::Maxd
+

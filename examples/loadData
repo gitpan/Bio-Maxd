@@ -1,0 +1,29 @@
+#!/usr/bin/perl
+use DBI;
+use DBD::mysql;
+use Bio::Maxd;
+
+  my $maxd = new Bio::Maxd;
+  my $dbh = $maxd->dbconnect();
+
+  $result = $maxd->load_file(
+     -verbose=>"1",
+     -dbh=>$dbh,
+     -matrix_file=>'./examples/SA10Hu95metrics.txt',
+     -submitter=>'User Name',
+     -experiment=>'Cancer',
+     -array_type=>'HG-U95A2',
+     -extract=>'SA8',
+     -scanning_protocol=>'0',
+     -hybridisation_protocol=>'0',
+     -image_analysis_protocol=>'0',
+     -image_attribute_description=>'',
+     -repository_URL=>'/home/maxd/Chips_DB/',
+     -public=>'false');
+
+  $dbh->disconnect;
+
+  print "Done\n" if ($result);
+
+
+
